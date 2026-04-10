@@ -2020,12 +2020,7 @@ struct d3d12_root_signature
         size_t mappings_size;
         size_t mappings_count;
 
-        struct
-        {
-            VkSamplerCreateInfo desc;
-            VkSamplerReductionModeCreateInfoEXT reduction;
-        } *vk_static_samplers_desc;
-
+        struct d3d12_root_signature_static_sampler_vk_desc *vk_static_samplers_desc;
         enum vkd3d_root_signature_heap_redzone_style redzone_style;
         /* Ideal: Push descriptor heap VA + descriptor heap size straight into PushData. */
         uint32_t redzone_inline_heap_offset;
