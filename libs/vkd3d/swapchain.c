@@ -868,27 +868,37 @@ static HRESULT STDMETHODCALLTYPE dxgi_vk_swap_chain_ChangeProperties(IDXGIVkSwap
         if (chain->user.backbuffers[i]->refcount != 0)
             return DXGI_ERROR_INVALID_CALL;
 
-    chain->desc = *pDesc;
-
     /* DXGI ResizeBuffers(0, 0, ...) means "use the current window client area".
      * On Wine + Wayland (xwayland-satellite) and similar paths, the resolved
      * client area can transiently come back as 0 — particularly when a
      * swapchain wrapper such as NVIDIA Streamline DLSS-G tears down and
      * recreates the underlying HWND while the X11 surface mapping is still
      * settling. Reallocating to 0×0 puts us in a state from which the game
-     * cannot recover and typically crashes the next Present. Refuse the
-     * collapse and keep the previous dimensions in that case; a subsequent
-     * ResizeBuffers with real values will pick the swapchain back up. */
-    if ((chain->desc.Width == 0 || chain->desc.Height == 0) &&
-            old_desc.Width != 0 && old_desc.Height != 0)
+     * cannot recover and typically crashes the next Present.
+     *
+     * Return S_OK *before* touching chain->desc at all in that case.
+     * Earlier versions of this guard wrote 0×0 into chain->desc and then
+     * restored the previous dims, but the present_task thread can read
+     * chain->desc concurrently (it observes force_swapchain_recreation
+     * from the prior ChangeProperties and goes off to call
+     * vkCreateSwapchainKHR). If it happens to read between the assign and
+     * the restore it picks up extent=(0,0), the create either fails or
+     * yields a broken chain, the old swapchain is destroyed but never
+     * replaced, and the game black-screens. Caught in PRAGMATA: the
+     * second swapchain (#78 in our wayland trace) was destroyed while a
+     * 2560×1440 resize was still being processed by present_task, the
+     * subsequent vkCreateSwapchainKHR for the new size never happened.
+     * Behave like a silent no-op instead — pretend the resize completed
+     * without disturbing in-flight state. */
+    if ((pDesc->Width == 0 || pDesc->Height == 0) &&
+            chain->desc.Width != 0 && chain->desc.Height != 0)
     {
-        WARN("Refusing to reallocate swapchain to %ux%u (had %ux%u); keeping previous dimensions.\n",
-                chain->desc.Width, chain->desc.Height, old_desc.Width, old_desc.Height);
-        if (chain->desc.Width == 0)
-            chain->desc.Width = old_desc.Width;
-        if (chain->desc.Height == 0)
-            chain->desc.Height = old_desc.Height;
+        WARN("Refusing to reallocate swapchain to %ux%u (have %ux%u); keeping prior chain->desc untouched.\n",
+                pDesc->Width, pDesc->Height, chain->desc.Width, chain->desc.Height);
+        return S_OK;
     }
+
+    chain->desc = *pDesc;
 
     /* Don't do anything in this case. */
     if (old_desc.Width == chain->desc.Width &&
