@@ -2191,8 +2191,43 @@ static void dxgi_vk_swap_chain_recreate_swapchain_in_present_task(struct dxgi_vk
     VK_CALL(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vk_physical_device, chain->vk_surface, &surface_caps));
     dxgi_vk_swap_chain_update_wait_timing_capabilities(chain);
 
-    /* Win32 quirk. Minimized windows have maximum extents of zero. */
+    /* Win32 quirk. Minimized windows have maximum extents of zero.
+     *
+     * On Wine + Wayland (xwayland-satellite, gamescope, etc.) and similar
+     * non-Win32 paths the underlying Vulkan driver can transiently return
+     * maxImageExtent=(0,0) for valid surfaces — typically during the brief
+     * window between an X11 ResizeWindow request and the WM/compositor
+     * actually applying the new size. Treating that as a minimized-window
+     * bail leaves the swapchain destroyed (we destroy it just above at
+     * dxgi_vk_swap_chain_destroy_swapchain_in_present_task) and never
+     * recreated, which manifests as a permanent black screen even though
+     * the GPU is rendering and the audio/game loop are alive.
+     *
+     * If chain->desc has valid dimensions (i.e. the application asked for
+     * a real size), fall back to those instead of bailing. The image
+     * count fields will get clamped during vkCreateSwapchainKHR; if the
+     * surface really can't accommodate that size, the create call will
+     * fail and we'll come back through here on the next present.
+     *
+     * Caught in PRAGMATA (RE Engine) on Wine + gamescope: game initial-
+     * creates swapchain at 1920×1080, then ResizeBuffers(2560×1440), the
+     * recreate sees maxImageExtent=(0,0) during the X11 size handoff and
+     * the original heuristic permanently bails. */
     new_occlusion_state = surface_caps.maxImageExtent.width == 0 || surface_caps.maxImageExtent.height == 0;
+    if (new_occlusion_state && chain->desc.Width != 0 && chain->desc.Height != 0)
+    {
+        WARN("surface_caps.maxImageExtent is %ux%u (occlusion heuristic) but chain->desc is %ux%u; "
+                "falling back to chain->desc instead of bailing.\n",
+                surface_caps.maxImageExtent.width, surface_caps.maxImageExtent.height,
+                chain->desc.Width, chain->desc.Height);
+        surface_caps.maxImageExtent.width = chain->desc.Width;
+        surface_caps.maxImageExtent.height = chain->desc.Height;
+        if (surface_caps.minImageExtent.width > surface_caps.maxImageExtent.width)
+            surface_caps.minImageExtent.width = surface_caps.maxImageExtent.width;
+        if (surface_caps.minImageExtent.height > surface_caps.maxImageExtent.height)
+            surface_caps.minImageExtent.height = surface_caps.maxImageExtent.height;
+        new_occlusion_state = false;
+    }
     vkd3d_atomic_uint32_store_explicit(&chain->present.is_occlusion_state, (uint32_t)new_occlusion_state, vkd3d_memory_order_relaxed);
 
     /* There is nothing to do. We'll do a dummy present. */
