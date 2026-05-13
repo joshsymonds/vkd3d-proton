@@ -870,6 +870,26 @@ static HRESULT STDMETHODCALLTYPE dxgi_vk_swap_chain_ChangeProperties(IDXGIVkSwap
 
     chain->desc = *pDesc;
 
+    /* DXGI ResizeBuffers(0, 0, ...) means "use the current window client area".
+     * On Wine + Wayland (xwayland-satellite) and similar paths, the resolved
+     * client area can transiently come back as 0 — particularly when a
+     * swapchain wrapper such as NVIDIA Streamline DLSS-G tears down and
+     * recreates the underlying HWND while the X11 surface mapping is still
+     * settling. Reallocating to 0×0 puts us in a state from which the game
+     * cannot recover and typically crashes the next Present. Refuse the
+     * collapse and keep the previous dimensions in that case; a subsequent
+     * ResizeBuffers with real values will pick the swapchain back up. */
+    if ((chain->desc.Width == 0 || chain->desc.Height == 0) &&
+            old_desc.Width != 0 && old_desc.Height != 0)
+    {
+        WARN("Refusing to reallocate swapchain to %ux%u (had %ux%u); keeping previous dimensions.\n",
+                chain->desc.Width, chain->desc.Height, old_desc.Width, old_desc.Height);
+        if (chain->desc.Width == 0)
+            chain->desc.Width = old_desc.Width;
+        if (chain->desc.Height == 0)
+            chain->desc.Height = old_desc.Height;
+    }
+
     /* Don't do anything in this case. */
     if (old_desc.Width == chain->desc.Width &&
             old_desc.Height == chain->desc.Height &&
